@@ -1,0 +1,5 @@
+# Local files to be ignored
+**/__pycache__
+Data/
+chips/
+**/*.json
