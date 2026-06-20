@@ -338,13 +338,13 @@ def main():
             "novel_shape_aware_gt : compare shape-aware HBBs against GT HBB shapefiles"
         ),
     )
-    ap.add_argument("--dataset_path",  default="/run/media/brr/PrimeStore/SkyServe/OBB_HBB/ShipRSImageNet_V1.v1i.yolov12/train/labels/*.txt",
+    ap.add_argument("--dataset_path",
                     help="Glob pattern for label .txt files (novel_shape_aware mode)")
-    ap.add_argument("--hbb_gt_root",   default="Data/HBB_GT",
+    ap.add_argument("--hbb_gt_root",
                     help="Root folder of HBB ground-truth shapefiles (novel_shape_aware_gt mode)")
-    ap.add_argument("--obb_gt_root",   default="Data/OBB_GT",
+    ap.add_argument("--obb_gt_root",
                     help="Root folder of OBB ground-truth shapefiles (novel_shape_aware_gt mode)")
-    ap.add_argument("--output",        default="/run/media/brr/PrimeStore/SkyServe/OBB_HBB/benchmark_results.json",
+    ap.add_argument("--output",
                     help="Path to write JSON results")
     ap.add_argument("--shape_q",        type=float, default=1.5)
     ap.add_argument("--shape_fullness", type=float, default=0.8)
