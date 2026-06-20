@@ -226,7 +226,7 @@ def novel_shape_aware_gt(
                         acc["angle_bins"][bin_name]["count"]   += 1
 
         if verbose:
-            row = "  [{}]".format(hbb_name)
+            row = "  [HBB: {} <-> OBB: {}]".format(hbb_name, obb_name)
             for m in METHOD_NAMES:
                 s = _acc_stats(scene_accs[m])
                 row += f"  {m}: IoU={s['Mean_IoU']} over={s['Overshoot']} under={s['Undershoot']} n={s['Samples']}"
@@ -346,9 +346,9 @@ def main():
                     help="Root folder of OBB ground-truth shapefiles (novel_shape_aware_gt mode)")
     ap.add_argument("--output",
                     help="Path to write JSON results")
-    ap.add_argument("--shape_q",        type=float, default=1.5)
-    ap.add_argument("--shape_fullness", type=float, default=0.8)
-    ap.add_argument("--shrink",         type=float, default=0.95)
+    ap.add_argument("--shape_q",        type=float, default=2.2)
+    ap.add_argument("--shape_fullness", type=float, default=0.9)
+    ap.add_argument("--shrink",         type=float, default=1.0)
     args = ap.parse_args()
 
     if args.mode == "novel_shape_aware_gt":
