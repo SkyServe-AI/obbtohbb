@@ -15,7 +15,7 @@ Output files: <output_dir>/chip_<bin>_<n>_<scene>_<angle>.png
 
 Usage
 -----
-  conda run -n MiscScripts python3 visualise_methods.py \
+  python visualise_methods.py \
       --tif_roots  Data/mock_raw_tif_files_and_shp_files/MOCK/aditi_08_04_mock \
                    Data/mock_raw_tif_files_and_shp_files/MOCK/aki_mock_images \
       --obb_gt_root Data/OBB_GT \
