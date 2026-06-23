@@ -9,7 +9,6 @@ import json
 import warnings
 
 # Import the user's obb2hbb script dynamically
-sys.path.append("/run/media/brr/PrimeStore/SkyServe/OBB_HBB")
 import obb2hbb
 
 def outer_hbb(geom: Polygon) -> Polygon:
@@ -269,7 +268,31 @@ def calculate_metrics(obb_poly: Polygon, hbb_poly: Polygon):
 
     return iou, overshoot, undershoot
 
-def process_file(filepath: str, results: dict):
+def load_hbb_yolo_polys(filepath: str) -> list:
+    """Load HBB YOLO labels (class cx cy w h, normalized) as Shapely Polygons."""
+    polys = []
+    with open(filepath, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 5:
+                continue
+            cx, cy, w, h = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
+            polys.append(box(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2))
+    return polys
+
+
+def _best_iou_hbb(pred_hbb: Polygon, gt_polys: list):
+    best_iou, best_gt = -1.0, None
+    for g in gt_polys:
+        inter = pred_hbb.intersection(g).area
+        union = pred_hbb.union(g).area
+        iou   = inter / union if union > 0 else 0.0
+        if iou > best_iou:
+            best_iou, best_gt = iou, g
+    return best_gt
+
+
+def process_file(filepath: str, results: dict, gt_hbbs: list | None = None):
     with open(filepath, 'r') as f:
         lines = f.readlines()
 
@@ -310,7 +333,14 @@ def process_file(filepath: str, results: dict):
         }
 
         for name, hbb in algorithms.items():
-            iou, over, under = calculate_metrics(obb, hbb)
+            # If GT HBBs provided, benchmark against best-matching GT instead of self
+            if gt_hbbs:
+                best_gt = _best_iou_hbb(hbb, gt_hbbs)
+                if best_gt is None:
+                    continue
+                iou, over, under = calculate_metrics(best_gt, hbb)
+            else:
+                iou, over, under = calculate_metrics(obb, hbb)
             results[name]["count"] += 1
             results[name]["iou_sum"] += iou
             results[name]["over_sum"] += over
@@ -344,6 +374,8 @@ def main():
                     help="Root folder of HBB ground-truth shapefiles (novel_shape_aware_gt mode)")
     ap.add_argument("--obb_gt_root",
                     help="Root folder of OBB ground-truth shapefiles (novel_shape_aware_gt mode)")
+    ap.add_argument("--hbb_gt_labels",
+                    help="Glob pattern for HBB ground-truth YOLO .txt files (optional, novel_shape_aware mode)")
     ap.add_argument("--output",
                     help="Path to write JSON results")
     ap.add_argument("--shape_q",        type=float, default=2.2)
@@ -379,12 +411,19 @@ def main():
             for name in ["Outer_HBB", "Area_Equiv_HBB", "GBB_Marginalized", "Novel_ShapeAware"]
         }
 
+        # Build stem→gt_hbbs lookup if HBB GT labels are provided
+        hbb_gt_map = {}
+        if args.hbb_gt_labels:
+            for gt_file in glob.glob(args.hbb_gt_labels):
+                hbb_gt_map[Path(gt_file).stem] = load_hbb_yolo_polys(gt_file)
+
         print(f"Processing {len(files)} files...")
 
         for i, file in enumerate(files):
             if i % 500 == 0:
                 print(f"  Processed {i}/{len(files)} files")
-            process_file(file, results)
+            gt_hbbs = hbb_gt_map.get(Path(file).stem) if hbb_gt_map else None
+            process_file(file, results, gt_hbbs=gt_hbbs)
 
         print("\n--- Benchmark Results ---")
 

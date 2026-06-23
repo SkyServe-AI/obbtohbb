@@ -20,8 +20,7 @@ Usage
                    Data/mock_raw_tif_files_and_shp_files/MOCK/aki_mock_images \
       --obb_gt_root Data/OBB_GT \
       --hbb_gt_root Data/HBB_GT \
-      --output_dir  chips \
-      --seed        42
+      --output_dir  chips
 """
 from __future__ import annotations
 import argparse

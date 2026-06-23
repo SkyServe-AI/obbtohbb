@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-obb2hbb.py  –  Convert OBB polygons (shapefile / GeoJSON / CSV) to HBB
+obb2hbb.py  -  Convert OBB polygons (shapefile / GeoJSON / CSV) to HBB
 using the shape-aware method with best-found defaults.
 
 Best defaults (from tuning on Sentinel-2 ship dataset):
