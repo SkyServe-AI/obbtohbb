@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-visualise_methods.py  –  Save individual 64×64 px chip PNGs for each HBB method.
+visualise_methods.py  -  Save individual 64x64 px chip PNGs for each HBB method.
 
 Produces 9 chips (3 per angle bin: 0-15°, 15-30°, 30-45°).
 Each chip is saved as a separate PNG with all method overlays drawn on it:
@@ -20,7 +20,8 @@ Usage
                    Data/mock_raw_tif_files_and_shp_files/MOCK/aki_mock_images \
       --obb_gt_root Data/OBB_GT \
       --hbb_gt_root Data/HBB_GT \
-      --output_dir  chips
+      --output_dir  chips \
+      --seed        42
 """
 from __future__ import annotations
 import argparse
@@ -49,6 +50,9 @@ CHIP_HALF       = 16          # pixels each side of centroid → 32×32 chip
 SCALE           = 1           # upscale factor for drawing clarity → 512×512 saved
 SAMPLES_PER_BIN = 3
 
+EXTRA_METHODS   = ["Outer_HBB", "Area_Equiv_HBB", "GBB_Marginalized"]
+DEFAULT_METHODS = ["OBB", "GT_HBB", "Novel_ShapeAware"]
+
 # BGR-style tuples as PIL RGB
 METHOD_STYLES = {
     "OBB":              {"color": (255,  60,  60), "width": 0.5, "dash": False},
@@ -74,11 +78,42 @@ def _angle_bin(poly: Polygon) -> str | None:
 
 
 def _find_tif(scene_name: str, tif_roots: list[Path]) -> Path | None:
+    """Find a matching .tif file by stem across roots."""
     for root in tif_roots:
         c = root / f"{scene_name}.tif"
         if c.exists():
             return c
     return None
+
+
+def _find_image(scene_name: str, img_roots: list[Path]) -> Path | None:
+    """Find a matching PNG/JPG file by stem across roots."""
+    for root in img_roots:
+        for ext in (".png", ".jpg", ".jpeg"):
+            c = root / f"{scene_name}{ext}"
+            if c.exists():
+                return c
+    return None
+
+
+def _pixel_identity_transform():
+    """Affine identity so pixel-space coords pass through ~transform unchanged."""
+    return rasterio.transform.Affine(1.0, 0.0, 0.0,
+                                     0.0, 1.0, 0.0)
+
+
+def _load_png_image(img_path: Path):
+    """Load a PNG/JPG with PIL — already uint8, no percentile stretch needed.
+    CLAHE is applied per channel for consistency with the TIF path.
+    Returns (rgb_uint8_HxWx3, pixel_identity_transform, width, height).
+    """
+    img = Image.open(str(img_path)).convert("RGB")
+    rgb = np.array(img, dtype=np.uint8)
+    for c in range(3):
+        rgb[:, :, c] = _clahe_channel(rgb[:, :, c])
+    transform = _pixel_identity_transform()
+    height, width = rgb.shape[:2]
+    return rgb, transform, width, height
 
 
 def _best_gt_hbb(ref_hbb: Polygon, gt_geoms: list) -> Polygon | None:
@@ -103,30 +138,39 @@ def _clahe_channel(ch: np.ndarray, clip_limit: float = 2.0, tile: int = 4) -> np
     return clahe.apply(ch)
 
 
-def _load_normalised_image(tif_path: Path):
-    """Load the full TIF, apply 2-98 percentile stretch + CLAHE on each channel.
-    Returns (rgb_uint8_HxWx3, rasterio_transform, rasterio_src_meta) — image is
-    fully in memory and normalised; the open src is closed afterwards.
+def _tif_meta(tif_path: Path) -> tuple:
+    """Read transform + dimensions. Dispatches on extension:
+    - .tif: rasterio (georeferenced transform)
+    - .png/.jpg/.jpeg: PIL + pixel-identity transform
     """
+    if tif_path.suffix.lower() in (".png", ".jpg", ".jpeg"):
+        img = Image.open(str(tif_path))
+        w, h = img.size
+        return _pixel_identity_transform(), w, h
     with rasterio.open(str(tif_path)) as src:
-        data      = src.read([1, 2, 3])          # (3, H, W)
+        return src.transform, src.width, src.height
+
+
+def _load_normalised_image(tif_path: Path):
+    """Load and normalise an image. Dispatches on extension:
+    - .tif: rasterio + 2-98 percentile stretch + CLAHE
+    - .png/.jpg/.jpeg: PIL + CLAHE only (already uint8)
+    """
+    if tif_path.suffix.lower() in (".png", ".jpg", ".jpeg"):
+        return _load_png_image(tif_path)
+    with rasterio.open(str(tif_path)) as src:
+        data      = src.read([1, 2, 3])
         transform = src.transform
         width     = src.width
         height    = src.height
-
-    rgb = np.moveaxis(data, 0, -1).astype(np.float32)  # (H, W, 3)
-
-    # 2–98 percentile stretch per channel
+    rgb = np.moveaxis(data, 0, -1).astype(np.float32)
     for c in range(3):
         lo, hi = np.percentile(rgb[:, :, c], [2, 98])
         span = max(float(hi - lo), 1.0)
         rgb[:, :, c] = np.clip((rgb[:, :, c] - lo) / span * 255.0, 0, 255)
     rgb = rgb.astype(np.uint8)
-
-    # CLAHE per channel
     for c in range(3):
         rgb[:, :, c] = _clahe_channel(rgb[:, :, c])
-
     return rgb, transform, width, height
 
 
@@ -268,9 +312,305 @@ def collect_pool(tif_roots, obb_gt_root, hbb_gt_root):
     return pool
 
 
-DEFAULT_METHODS = ["OBB", "GT_HBB", "Novel_ShapeAware"]
-EXTRA_METHODS   = ["Outer_HBB", "Area_Equiv_HBB", "GBB_Marginalized"]
+def collect_pool_hbb(tif_roots: list, hbb_label_root: Path) -> dict:
+    """
+    Like collect_pool() but sources GT HBBs from YOLO HBB label .txt files
+    (cx cy w h, normalized) instead of shapefiles.
 
+    Each .txt file in hbb_label_root is matched by stem to a .tif found in
+    any of tif_roots.  The HBB geo-polygon is used as both 'gt_hbb' and 'obb'
+    in the candidate dict so that save_chips() works unchanged.  Because HBBs
+    are axis-aligned, every candidate falls in the '0-15' angle bin.
+    """
+    from obbhbbstats import parse_hbb_yolo_line
+
+    pool = {b: [] for b in ANGLE_BINS}
+
+    for label_path in sorted(hbb_label_root.glob("*.txt")):
+        tif_path = _find_tif(label_path.stem, tif_roots)
+        if tif_path is None:
+            continue
+
+        with open(label_path) as f:
+            lines = f.readlines()
+
+        # Read TIF transform to convert normalized coords → geo coords
+        with rasterio.open(str(tif_path)) as src:
+            transform = src.transform
+            img_w, img_h = src.width, src.height
+
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) < 5:
+                continue
+            try:
+                cx_norm = float(parts[1])
+                cy_norm = float(parts[2])
+                w_norm  = float(parts[3])
+                h_norm  = float(parts[4])
+            except ValueError:
+                continue
+            if w_norm < 1e-8 or h_norm < 1e-8:
+                continue
+
+            # Denormalize to pixel space
+            cx_px = cx_norm * img_w
+            cy_px = cy_norm * img_h
+            w_px  = w_norm  * img_w
+            h_px  = h_norm  * img_h
+
+            # Centroid in geo coords (for chip extraction)
+            cx_geo, cy_geo = transform * (cx_px, cy_px)
+
+            # Convert pixel-space box corners to geo coords for drawing
+            corners_px = [
+                (cx_px - w_px / 2, cy_px - h_px / 2),
+                (cx_px + w_px / 2, cy_px - h_px / 2),
+                (cx_px + w_px / 2, cy_px + h_px / 2),
+                (cx_px - w_px / 2, cy_px + h_px / 2),
+            ]
+            corners_geo = [transform * pt for pt in corners_px]
+            hbb_geo = Polygon(corners_geo)
+            if not hbb_geo.is_valid or hbb_geo.area < 1e-8:
+                continue
+
+            novel   = novel_shape_aware(hbb_geo)
+            outer   = outer_hbb(hbb_geo)
+            area_eq = area_equiv_hbb(hbb_geo)
+            gbb     = gbb_marginalized_hbb(hbb_geo, sigma_scale=1.0)
+
+            pool["0-15"].append(dict(
+                obb=hbb_geo, gt_hbb=hbb_geo,
+                outer=outer, area_equiv=area_eq, gbb=gbb, novel=novel,
+                cx_geo=cx_geo, cy_geo=cy_geo,
+                tif_path=tif_path,
+                scene=label_path.stem,
+                angle_deg=0.0,
+            ))
+
+    return pool
+
+
+def collect_pool_txt(tif_roots: list, obb_label_root: Path, hbb_label_root: Path) -> dict:
+    """
+    Like collect_pool() but reads both OBB and HBB labels from .txt files
+    instead of shapefiles.
+
+    OBB labels: 4-corner normalized (class x1 y1 x2 y2 x3 y3 x4 y4)
+    HBB labels: YOLO format normalized (class cx cy w h)
+
+    Files are paired by stem. The TIF geotransform is used to convert all
+    normalized coords → geo coords so that save_chips() works unchanged.
+    """
+    pool = {b: [] for b in ANGLE_BINS}
+
+    obb_files = {p.stem: p for p in sorted(obb_label_root.glob("*.txt"))}
+    hbb_files = {p.stem: p for p in sorted(hbb_label_root.glob("*.txt"))}
+    paired_stems = sorted(set(obb_files) & set(hbb_files))
+
+    for stem in paired_stems:
+        tif_path = _find_tif(stem, tif_roots)
+        if tif_path is None:
+            continue
+
+        with rasterio.open(str(tif_path)) as src:
+            transform = src.transform
+            img_w, img_h = src.width, src.height
+
+        # Load GT HBBs in geo coords from YOLO HBB label file
+        gt_hbbs_geo = []
+        with open(hbb_files[stem]) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 5:
+                    continue
+                try:
+                    cx_px = float(parts[1]) * img_w
+                    cy_px = float(parts[2]) * img_h
+                    w_px  = float(parts[3]) * img_w
+                    h_px  = float(parts[4]) * img_h
+                except ValueError:
+                    continue
+                if w_px < 1e-8 or h_px < 1e-8:
+                    continue
+                corners_px = [
+                    (cx_px - w_px / 2, cy_px - h_px / 2),
+                    (cx_px + w_px / 2, cy_px - h_px / 2),
+                    (cx_px + w_px / 2, cy_px + h_px / 2),
+                    (cx_px - w_px / 2, cy_px + h_px / 2),
+                ]
+                corners_geo = [transform * pt for pt in corners_px]
+                hbb_geo = Polygon(corners_geo)
+                if hbb_geo.is_valid and hbb_geo.area >= 1e-8:
+                    gt_hbbs_geo.append(hbb_geo)
+
+        if not gt_hbbs_geo:
+            continue
+
+        # Load OBBs in geo coords from 4-corner normalized label file
+        with open(obb_files[stem]) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 9:
+                    continue
+                try:
+                    coords = [float(x) for x in parts[1:9]]
+                except ValueError:
+                    continue
+
+                # Denormalize corners to pixel space then to geo coords
+                points_px  = [(coords[i] * img_w, coords[i+1] * img_h)
+                              for i in range(0, 8, 2)]
+                points_geo = [transform * pt for pt in points_px]
+
+                try:
+                    obb_geo = Polygon(points_geo)
+                    if not obb_geo.is_valid:
+                        obb_geo = obb_geo.buffer(0)
+                    if obb_geo.area < 1e-8:
+                        continue
+                except Exception:
+                    continue
+
+                bin_name = _angle_bin(obb_geo)
+                if bin_name is None:
+                    continue
+
+                novel   = novel_shape_aware(obb_geo)
+                outer   = outer_hbb(obb_geo)
+                area_eq = area_equiv_hbb(obb_geo)
+                gbb     = gbb_marginalized_hbb(obb_geo, sigma_scale=1.0)
+                gt_hbb  = _best_gt_hbb(novel, gt_hbbs_geo)
+                if gt_hbb is None:
+                    continue
+
+                _, _, _, _, theta = obb2hbb._mrr_params(obb_geo)
+                angle_deg = abs(theta) * 180 / math.pi % 90
+                if angle_deg > 45:
+                    angle_deg = 90 - angle_deg
+
+                pool[bin_name].append(dict(
+                    obb=obb_geo, gt_hbb=gt_hbb,
+                    outer=outer, area_equiv=area_eq, gbb=gbb, novel=novel,
+                    cx_geo=obb_geo.centroid.x, cy_geo=obb_geo.centroid.y,
+                    tif_path=tif_path,
+                    scene=stem,
+                    angle_deg=round(angle_deg, 1),
+                ))
+
+    return pool
+
+
+def collect_pool_txt_png(img_roots: list, obb_label_root: Path,
+                         hbb_label_root: Path) -> dict:
+    """
+    Like collect_pool_txt() but for plain PNG/JPG images with no geospatial
+    context. Labels are in normalized 0-1 coords and are converted to pixel
+    space using the image dimensions. All polygons live in pixel space with
+    a pixel-identity transform, so save_chips() works unchanged.
+
+    OBB labels: 4-corner normalized (class x1 y1 x2 y2 x3 y3 x4 y4)
+    HBB labels: YOLO format normalized (class cx cy w h)
+
+    Files are paired by stem across obb_label_root and hbb_label_root.
+    """
+    pool = {b: [] for b in ANGLE_BINS}
+
+    obb_files = {p.stem: p for p in sorted(obb_label_root.glob("*.txt"))}
+    hbb_files = {p.stem: p for p in sorted(hbb_label_root.glob("*.txt"))}
+    paired_stems = sorted(set(obb_files) & set(hbb_files))
+
+    for stem in paired_stems:
+        img_path = _find_image(stem, img_roots)
+        if img_path is None:
+            continue
+
+        # Get image dimensions via PIL — no rasterio needed
+        img_pil  = Image.open(str(img_path))
+        img_w, img_h = img_pil.size
+        img_pil.close()
+
+        transform = _pixel_identity_transform()
+
+        # Load GT HBBs in pixel space from YOLO HBB label file
+        gt_hbbs_px = []
+        with open(hbb_files[stem]) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 5:
+                    continue
+                try:
+                    cx_px = float(parts[1]) * img_w
+                    cy_px = float(parts[2]) * img_h
+                    w_px  = float(parts[3]) * img_w
+                    h_px  = float(parts[4]) * img_h
+                except ValueError:
+                    continue
+                if w_px < 1e-8 or h_px < 1e-8:
+                    continue
+                corners = [
+                    (cx_px - w_px / 2, cy_px - h_px / 2),
+                    (cx_px + w_px / 2, cy_px - h_px / 2),
+                    (cx_px + w_px / 2, cy_px + h_px / 2),
+                    (cx_px - w_px / 2, cy_px + h_px / 2),
+                ]
+                hbb_px = Polygon(corners)
+                if hbb_px.is_valid and hbb_px.area >= 1e-8:
+                    gt_hbbs_px.append(hbb_px)
+
+        if not gt_hbbs_px:
+            continue
+
+        # Load OBBs in pixel space from 4-corner normalized label file
+        with open(obb_files[stem]) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 9:
+                    continue
+                try:
+                    coords = [float(x) for x in parts[1:9]]
+                except ValueError:
+                    continue
+
+                points_px = [(coords[i] * img_w, coords[i+1] * img_h)
+                             for i in range(0, 8, 2)]
+
+                try:
+                    obb_px = Polygon(points_px)
+                    if not obb_px.is_valid:
+                        obb_px = obb_px.buffer(0)
+                    if obb_px.area < 1e-8:
+                        continue
+                except Exception:
+                    continue
+
+                bin_name = _angle_bin(obb_px)
+                if bin_name is None:
+                    continue
+
+                novel   = novel_shape_aware(obb_px)
+                outer   = outer_hbb(obb_px)
+                area_eq = area_equiv_hbb(obb_px)
+                gbb     = gbb_marginalized_hbb(obb_px, sigma_scale=1.0)
+                gt_hbb  = _best_gt_hbb(novel, gt_hbbs_px)
+                if gt_hbb is None:
+                    continue
+
+                _, _, _, _, theta = obb2hbb._mrr_params(obb_px)
+                angle_deg = abs(theta) * 180 / math.pi % 90
+                if angle_deg > 45:
+                    angle_deg = 90 - angle_deg
+
+                pool[bin_name].append(dict(
+                    obb=obb_px, gt_hbb=gt_hbb,
+                    outer=outer, area_equiv=area_eq, gbb=gbb, novel=novel,
+                    cx_geo=obb_px.centroid.x, cy_geo=obb_px.centroid.y,
+                    tif_path=img_path,      # save_chips uses this key for any image
+                    scene=stem,
+                    angle_deg=round(angle_deg, 1),
+                ))
+
+    return pool
 
 def _tif_meta(tif_path: Path) -> tuple:
     """Read only transform + dimensions from a TIF — no pixel data."""
@@ -408,20 +748,48 @@ def save_chips(pool, output_dir: Path, all_methods: bool = False):
 
 def main():
     ap = argparse.ArgumentParser(description="Save HBB method chip PNGs")
-    ap.add_argument("--tif_roots",   nargs="+", required=True)
-    ap.add_argument("--obb_gt_root", default="Data/OBB_GT")
-    ap.add_argument("--hbb_gt_root", default="Data/HBB_GT")
-    ap.add_argument("--output_dir",  default="chips")
-    ap.add_argument("--all_methods", action="store_true",
+    ap.add_argument("--tif_roots",      nargs="+",
+                    help="Folders of .tif raster files (shapefile / txt-label TIF modes)")
+    ap.add_argument("--img_roots",      nargs="+",
+                    help="Folders of .png/.jpg image files (txt-label PNG/JPG mode)")
+    ap.add_argument("--obb_gt_root",    default="Data/OBB_GT",
+                    help="Root of shapefile-based OBB GT dirs (shapefile mode)")
+    ap.add_argument("--hbb_gt_root",    default="Data/HBB_GT",
+                    help="Root of shapefile-based HBB GT dirs (shapefile mode)")
+    ap.add_argument("--obb_label_root",
+                    help="Folder of OBB .txt label files (4-corner normalized).")
+    ap.add_argument("--hbb_label_root",
+                    help="Folder of YOLO HBB .txt label files (cx cy w h, normalized).")
+    ap.add_argument("--output_dir",     default="chips")
+    ap.add_argument("--all_methods",    action="store_true",
                     help="Draw all 6 overlays; default draws only OBB, GT_HBB, Novel_ShapeAware")
     args = ap.parse_args()
 
-    tif_roots   = [Path(r) for r in args.tif_roots]
-    obb_gt_root = Path(args.obb_gt_root)
-    hbb_gt_root = Path(args.hbb_gt_root)
-
     print("Collecting candidates...")
-    pool = collect_pool(tif_roots, obb_gt_root, hbb_gt_root)
+
+    if args.img_roots and args.obb_label_root and args.hbb_label_root:
+        # PNG/JPG mode — pixel-space coords, no rasterio
+        img_roots = [Path(r) for r in args.img_roots]
+        pool = collect_pool_txt_png(img_roots,
+                                    Path(args.obb_label_root),
+                                    Path(args.hbb_label_root))
+    elif args.tif_roots and args.obb_label_root and args.hbb_label_root:
+        # TIF + txt label mode — geo coords via rasterio transform
+        tif_roots = [Path(r) for r in args.tif_roots]
+        pool = collect_pool_txt(tif_roots,
+                                Path(args.obb_label_root),
+                                Path(args.hbb_label_root))
+    elif args.tif_roots and args.hbb_label_root:
+        # HBB-only txt label mode
+        tif_roots = [Path(r) for r in args.tif_roots]
+        pool = collect_pool_hbb(tif_roots, Path(args.hbb_label_root))
+    elif args.tif_roots:
+        # Original shapefile mode
+        tif_roots = [Path(r) for r in args.tif_roots]
+        pool = collect_pool(tif_roots, Path(args.obb_gt_root), Path(args.hbb_gt_root))
+    else:
+        ap.error("Provide --tif_roots (TIF/shapefile modes) or --img_roots (PNG/JPG mode)")
+
     for b in ANGLE_BINS:
         print(f"  Bin {b}°: {len(pool[b])} candidates")
 

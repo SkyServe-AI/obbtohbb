@@ -31,18 +31,27 @@ There are two datasets used with this paper,
 ### Usage
 
 For getting the stats with `obbhbbstats.py`, there are three methods,
-1. Using OBB labels only (DOTA Format) : `python obbhbbstats.py --mode novel_shape_aware --dataset_path <Path to OBB labels Folder> --output <Path to output JSON>`
-2. Using OBB and HBB labels (DOTA Format) : `python obbhbbstats.py --mode novel_shape_aware --dataset_path <Path to OBB labels Folder> --output <Path to output JSON> --hbb_gt_labels <Path to HBB labels Folder>`
+1. Using OBB labels only (DOTA Format) : `python obbhbbstats.py --mode novel_shape_aware --obb_gt_labels <Path to OBB labels Folder> --output <Path to output JSON>`
+2. Using OBB and HBB labels (DOTA Format) : `python obbhbbstats.py --mode novel_shape_aware --obb_gt_labels h <Path to OBB labels Folder> --output <Path to output JSON> --hbb_gt_labels <Path to HBB labels Folder>`
 3. Using shapefiles for OBB and HBB : `python obbhbbstats.py --mode novel_shape_aware_gt --hbb_gt_root <Path to folder containing HBB shapefiles> --obb_gt_root <Path to folder containing OBB shapefiles> --output <Path to output JSON>`
 
-For visualising the different methods, use the following command,
-```bash
-  python visualise_methods.py \
-      --tif_roots  <Path to folder containing TIF files>
-      --obb_gt_root <Path to folder containing OBB GT shapefiles> \
-      --hbb_gt_root <Path to folder containing HBB GT shapefiles> \
-      --output_dir  <Path to output directory for storing image chips with bounding boxes drawn>
-```
+For visualising the different methods, there are two methods,
+1. When using TIF images with OBB and HBB labels stored in shape files : 
+    ```
+    python visualise_methods.py \
+            --tif_roots  <Path to folder containing TIF files>
+            --obb_gt_root <Path to folder containing OBB GT shapefiles> \
+            --hbb_gt_root <Path to folder containing HBB GT shapefiles> \
+            --output_dir  <Path to output directory for storing image chips with bounding boxes drawn>
+    ```
+2. When using images with OBB and HBB labels stored in text files using DOTA format : 
+    ```
+    python visualise_methods.py \
+            --img_roots  <Path to folder containing image files>
+            --obb_label_root <Path to folder containing OBB GT text files> \
+            --hbb_label_root <Path to folder containing HBB GT text files> \
+            --output_dir  <Path to output directory for storing image chips with bounding boxes drawn>
+    ```
 
 ### Requirements
 

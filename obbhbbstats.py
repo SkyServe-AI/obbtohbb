@@ -368,14 +368,14 @@ def main():
             "novel_shape_aware_gt : compare shape-aware HBBs against GT HBB shapefiles"
         ),
     )
-    ap.add_argument("--dataset_path",
-                    help="Glob pattern for label .txt files (novel_shape_aware mode)")
+    ap.add_argument("--obb_gt_labels",
+                    help="Folder path for OBB ground truth YOLO .txt files (novel_shape_aware mode)")
     ap.add_argument("--hbb_gt_root",
                     help="Root folder of HBB ground-truth shapefiles (novel_shape_aware_gt mode)")
     ap.add_argument("--obb_gt_root",
                     help="Root folder of OBB ground-truth shapefiles (novel_shape_aware_gt mode)")
     ap.add_argument("--hbb_gt_labels",
-                    help="Glob pattern for HBB ground-truth YOLO .txt files (optional, novel_shape_aware mode)")
+                    help="Folder path for HBB ground-truth YOLO .txt files (optional, novel_shape_aware mode)")
     ap.add_argument("--output",
                     help="Path to write JSON results")
     ap.add_argument("--shape_q",        type=float, default=2.2)
@@ -397,7 +397,7 @@ def main():
         print(f"\nResults written to {args.output}")
 
     else:
-        files = glob.glob(args.dataset_path)
+        files = glob.glob(args.obb_gt_labels + "/*.txt")
 
         results = {
             name: {
@@ -414,7 +414,7 @@ def main():
         # Build stem→gt_hbbs lookup if HBB GT labels are provided
         hbb_gt_map = {}
         if args.hbb_gt_labels:
-            for gt_file in glob.glob(args.hbb_gt_labels):
+            for gt_file in glob.glob(args.hbb_gt_labels + "/*.txt"):
                 hbb_gt_map[Path(gt_file).stem] = load_hbb_yolo_polys(gt_file)
 
         print(f"Processing {len(files)} files...")
